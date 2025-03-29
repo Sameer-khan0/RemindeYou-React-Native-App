@@ -1,9 +1,10 @@
 import { useState, useEffect } from "react";
-import { View, Text, TouchableOpacity, StyleSheet, Platform, useColorScheme } from "react-native";
+import { View, Text, TouchableOpacity, StyleSheet, Platform, useColorScheme, FlatList, Modal, TextInput, Alert, StatusBar } from "react-native";
 import DateTimePicker from "@react-native-community/datetimepicker";
 import * as Notifications from "expo-notifications";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { LinearGradient } from "expo-linear-gradient";
-import { Ionicons } from "@expo/vector-icons";
+import Icon from "react-native-vector-icons/Ionicons";
 
 async function setupNotificationChannel() {
   if (Platform.OS === "android") {
@@ -34,22 +35,115 @@ Notifications.setNotificationHandler({
   }),
 });
 
+const listScheduledNotifications = async () => {
+  const scheduledNotifications = await Notifications.getAllScheduledNotificationsAsync();
+  console.log("Scheduled Notifications:", scheduledNotifications);
+};
+
+
 export default function ReminderApp() {
+  const [reminders, setReminders] = useState([]);
+  const [modalVisible, setModalVisible] = useState(false);
   const [date, setDate] = useState(new Date());
+  const [tempDate, setTempDate] = useState(new Date());
+  const [reminderText, setReminderText] = useState("");
   const [showDatePicker, setShowDatePicker] = useState(false);
   const [showTimePicker, setShowTimePicker] = useState(false);
-  const [tempDate, setTempDate] = useState(new Date());
-
   const colorScheme = useColorScheme();
   const isDarkMode = colorScheme === "dark";
 
+  const removeExpiredReminders = async () => {
+    const now = new Date().getTime();
+    const scheduledNotifications = await Notifications.getAllScheduledNotificationsAsync();
+  
+    for (let notification of scheduledNotifications) {
+      if (notification.trigger.value < now) {
+        await Notifications.cancelScheduledNotificationAsync(notification.identifier);
+      }
+    }
+  
+    // Reload reminders after cleaning up
+    await loadReminders();
+  };
+  
+  // Call this inside `useEffect`
   useEffect(() => {
+    removeExpiredReminders();
+  }, []);
+  
+
+  useEffect(() => {
+    let notificationSubscription;
+    let responseSubscription;
+  
     const initialize = async () => {
       await requestPermissions();
       await setupNotificationChannel();
+  
+      // Reset reminders based on scheduled notifications
+      await loadReminders();
+  
+      // Listen for foreground notifications
+      notificationSubscription = Notifications.addNotificationReceivedListener(notification => {
+        removeTriggeredReminder(notification.request.identifier);
+      });
+  
+      // Listen for user interaction with notification
+      responseSubscription = Notifications.addNotificationResponseReceivedListener(response => {
+        removeTriggeredReminder(response.notification.request.identifier);
+      });
     };
+  
     initialize();
+  
+    return () => {
+      if (notificationSubscription) notificationSubscription.remove();
+      if (responseSubscription) responseSubscription.remove();
+    };
   }, []);
+
+  const saveReminders = async (reminders) => {
+    await AsyncStorage.setItem("reminders", JSON.stringify(reminders));
+  };
+
+  const loadReminders = async () => {
+    try {
+      const scheduledNotifications = await Notifications.getAllScheduledNotificationsAsync();
+      
+      const remindersWithDates = scheduledNotifications.map(notification => ({
+        id: notification.identifier,
+        text: notification.content.body,
+        time: new Date(notification.trigger.value), // Convert timestamp to Date object
+        dateString: new Date(notification.trigger.value).toLocaleDateString(),
+        timeString: new Date(notification.trigger.value).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      }));
+  
+      setReminders(remindersWithDates);
+    } catch (error) {
+      console.log("Error loading reminders:", error);
+    }
+  };
+  
+
+  const removeTriggeredReminder = async (id) => {
+    try {
+      // Cancel the notification
+      await Notifications.cancelScheduledNotificationAsync(id);
+      
+      // Remove from local state
+      setReminders(prev => prev.filter(reminder => reminder.id !== id));
+      
+      // Remove from AsyncStorage
+      const storedReminders = await AsyncStorage.getItem("reminders");
+      if (storedReminders) {
+        const parsedReminders = JSON.parse(storedReminders);
+        const updatedReminders = parsedReminders.filter(reminder => reminder.id !== id);
+        await AsyncStorage.setItem("reminders", JSON.stringify(updatedReminders));
+      }
+    } catch (error) {
+      console.log("Error removing triggered reminder:", error);
+    }
+  };
 
   const handleDateChange = (event, selectedDate) => {
     setShowDatePicker(false);
@@ -71,177 +165,478 @@ export default function ReminderApp() {
   };
 
   const scheduleNotification = async () => {
+    if (!reminderText.trim()) {
+      alert("Please enter a reminder");
+      return;
+    }
     const now = new Date();
-    const timeDifference = date.getTime() - now.getTime();
-  
-    if (timeDifference <= 1000) {
-      alert("Please select a time at least 1 second in the future");
+    if (date <= now) {
+      alert("Please select a future time");
       return;
     }
   
     try {
-      // Cancel any existing notifications
-      await Notifications.cancelAllScheduledNotificationsAsync();
+      const notificationId = Date.now().toString();
   
-      console.log("Scheduling notification for:", date.toISOString());
-      console.log("Current time:", now.toISOString());
-  
-      const identifier = await Notifications.scheduleNotificationAsync({
+      await Notifications.scheduleNotificationAsync({
         content: {
           title: "Reminder Alert! ⏰",
-          body: `Your reminder for ${date.toLocaleString()}`,
+          body: reminderText,
           sound: "default",
-          data: { reminderTime: date.toISOString() },
+          data: { id: notificationId },
         },
-        trigger: date, // Schedule notification for the specific date and time
+        trigger: date,
       });
   
-      console.log("Notification scheduled with ID:", identifier);
-      alert(`✅ Reminder set for ${date.toLocaleString()}`);
+      const newReminder = {
+        id: notificationId,
+        text: reminderText,
+        time: date,
+        dateString: date.toLocaleDateString(),
+        timeString: date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      };
+  
+      // Add to both state and storage
+      setReminders(prev => [...prev, newReminder]);
+      const storedReminders = await AsyncStorage.getItem("reminders");
+      const parsedReminders = storedReminders ? JSON.parse(storedReminders) : [];
+      await AsyncStorage.setItem(
+        "reminders",
+        JSON.stringify([...parsedReminders, newReminder])
+      );
+  
+      setModalVisible(false);
+      setReminderText("");
     } catch (error) {
-      console.error("Notification scheduling error:", error);
       alert("Failed to set reminder: " + error.message);
     }
   };
   
+  // Update your useEffect for initialization:
+  useEffect(() => {
+    let notificationSubscription;
+    let responseSubscription;
+  
+    const initialize = async () => {
+      await requestPermissions();
+      await setupNotificationChannel();
+      await loadReminders();
+  
+      notificationSubscription = Notifications.addNotificationReceivedListener(notification => {
+        const triggeredId = notification.request.content.data.id || notification.request.identifier;
+        removeTriggeredReminder(triggeredId);
+      });
+  
+      responseSubscription = Notifications.addNotificationResponseReceivedListener(response => {
+        const triggeredId = response.notification.request.content.data.id || response.notification.request.identifier;
+        removeTriggeredReminder(triggeredId);
+      });
+    };
+  
+    initialize();
+  
+    return () => {
+      if (notificationSubscription) notificationSubscription.remove();
+      if (responseSubscription) responseSubscription.remove();
+    };
+  }, []);
+  
+  // Update your useEffect for initialization:
+  useEffect(() => {
+    let notificationSubscription;
+    let responseSubscription;
+  
+    const initialize = async () => {
+      await requestPermissions();
+      await setupNotificationChannel();
+      await loadReminders();
+  
+      notificationSubscription = Notifications.addNotificationReceivedListener(notification => {
+        const triggeredId = notification.request.content.data.id || notification.request.identifier;
+        removeTriggeredReminder(triggeredId);
+      });
+  
+      responseSubscription = Notifications.addNotificationResponseReceivedListener(response => {
+        const triggeredId = response.notification.request.content.data.id || response.notification.request.identifier;
+        removeTriggeredReminder(triggeredId);
+      });
+    };
+  
+    initialize();
+  
+    return () => {
+      if (notificationSubscription) notificationSubscription.remove();
+      if (responseSubscription) responseSubscription.remove();
+    };
+  }, []);
   
 
+  const deleteReminder = async (id) => {
+    Alert.alert(
+      "Delete Reminder",
+      "Are you sure you want to delete this reminder?",
+      [
+        { text: "Cancel", style: "cancel" },
+        { 
+          text: "Delete", 
+          onPress: async () => {
+            try {
+              // Cancel the notification first
+              await Notifications.cancelScheduledNotificationAsync(id);
+              
+              // Then remove from local state and storage
+              const newReminders = reminders.filter(reminder => reminder.id !== id);
+              setReminders(newReminders);
+              await saveReminders(newReminders);
+            } catch (error) {
+              alert("Failed to delete reminder: " + error.message);
+            }
+          }
+        }
+      ]
+    );
+  };
+
+  const formatDate = (date) => {
+    return date.toLocaleDateString() + ' ' + date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+  };
+
   return (
-    <LinearGradient
-      colors={isDarkMode ? ["#1A1A2E", "#16213E"] : ["#E3F2FD", "#BBDEFB"]}
+    <LinearGradient 
+      colors={isDarkMode ? ["#121212", "#1E1E1E"] : ["#f5f5f5", "#e5e5e5"]} 
       style={styles.container}
     >
-      <View style={styles.card}>
-        <Text style={[styles.title, isDarkMode && styles.darkText]}>
-          Reminder Scheduler
+      <StatusBar backgroundColor={isDarkMode?"black":"white"} />
+      <View style={styles.headerContainer}>
+        <Text style={[styles.header, {color: isDarkMode ? '#fff' : '#000'}]}>Your Reminders</Text>
+        <Text style={[styles.subHeader, {color: isDarkMode ? '#aaa' : '#666'}]}>
+          {reminders.length} {reminders.length === 1 ? 'reminder' : 'reminders'}
         </Text>
-        
-        <View style={styles.dateContainer}>
-          <Ionicons 
-            name="calendar-outline" 
-            size={24} 
-            color={isDarkMode ? "#fff" : "#333"} 
-          />
-          <Text style={[styles.dateText, isDarkMode && styles.darkText]}>
-            {date.toLocaleString()}
+      </View>
+
+      {reminders.length === 0 ? (
+        <View style={styles.emptyState}>
+          <Icon name="time-outline" size={60} color={isDarkMode ? "#555" : "#ccc"} />
+          <Text style={[styles.noRemindersText, {color: isDarkMode ? '#aaa' : '#666'}]}>
+            No reminders set yet
+          </Text>
+          <Text style={[styles.noRemindersSubText, {color: isDarkMode ? '#666' : '#999'}]}>
+            Tap the + button to add a new reminder
           </Text>
         </View>
+      ) : (
+        <FlatList
+          data={reminders.sort((a, b) => a.time - b.time)}
+          keyExtractor={(item) => item.id}
+          contentContainerStyle={styles.listContainer}
+          renderItem={({ item }) => (
+            <View style={[
+              styles.reminderItem, 
+              {backgroundColor: isDarkMode ? '#252525' : '#fff'}
+            ]}>
+              <View style={{display:"flex",flexDirection:"row"}}>
+              <View style={styles.reminderIcon}>
+                <Icon 
+                  name="notifications-outline" 
+                  size={24} 
+                  color={isDarkMode ? "#6a5acd" : "#7b68ee"} 
+                />
+              </View>
+              <View style={styles.reminderContent}>
+                <Text style={[styles.reminderText, {color: isDarkMode ? '#fff' : '#333'}]}>
+                  {item.text}
+                </Text>
+                <Text style={[styles.reminderTime, {color: isDarkMode ? '#aaa' : '#666'}]}>
+                  {formatDate(item.time)}
+                </Text>
+              </View>
+              </View>
+              <TouchableOpacity 
+                style={styles.deleteButton}
+                onPress={() => deleteReminder(item.id)}
+              >
+                <Icon 
+                  name="trash-outline" 
+                  size={20} 
+                  color={isDarkMode ? "#ff6b6b" : "#ff5252"} 
+                />
+              </TouchableOpacity>
+            </View>
+          )}
+        />
+      )}
 
-        <TouchableOpacity
-          style={styles.button}
-          onPress={() => setShowDatePicker(true)}
-        >
-          <LinearGradient
-            colors={["#6200EE", "#BB86FC"]}
-            style={styles.buttonGradient}
-          >
-            <Ionicons name="calendar" size={20} color="#fff" />
-            <Text style={styles.buttonText}>Pick Date</Text>
-          </LinearGradient>
-        </TouchableOpacity>
+      <TouchableOpacity 
+        style={[styles.fab, {backgroundColor: isDarkMode ? '#7b68ee' : '#6a5acd'}]} 
+        onPress={() => setModalVisible(true)}
+      >
+        <Icon name="add" size={30} color="#fff" />
+      </TouchableOpacity>
 
-        <TouchableOpacity
-          style={styles.button}
-          onPress={scheduleNotification}
-        >
-          <LinearGradient
-            colors={["#00C853", "#00E676"]}
-            style={styles.buttonGradient}
-          >
-            <Ionicons name="alarm" size={20} color="#fff" />
-            <Text style={styles.buttonText}>Set Reminder</Text>
-          </LinearGradient>
-        </TouchableOpacity>
-
-        {(showDatePicker || showTimePicker) && (
-          <View style={styles.pickerContainer}>
-            {showDatePicker && (
-              <DateTimePicker
-                value={tempDate}
-                mode="date"
-                minimumDate={new Date()}
-                display={Platform.OS === "ios" ? "inline" : "default"}
-                onChange={handleDateChange}
-                accentColor="#6200EE"
-              />
-            )}
-            {showTimePicker && (
-              <DateTimePicker
-                value={tempDate}
-                mode="time"
-                display={Platform.OS === "ios" ? "inline" : "default"}
-                onChange={handleTimeChange}
-                accentColor="#6200EE"
-              />
-            )}
+      <Modal visible={modalVisible} transparent animationType="slide">
+        <View style={styles.modalContainer}>
+          <View style={[
+            styles.modalContent, 
+            {backgroundColor: isDarkMode ? '#252525' : '#fff'}
+          ]}>
+            <Text style={[styles.modalTitle, {color: isDarkMode ? '#fff' : '#000'}]}>
+              Set New Reminder
+            </Text>
+            
+            <TextInput
+              style={[
+                styles.input, 
+                {
+                  backgroundColor: isDarkMode ? '#333' : '#f5f5f5',
+                  color: isDarkMode ? '#fff' : '#000'
+                }
+              ]}
+              placeholder="Reminder for..."
+              placeholderTextColor={isDarkMode ? '#aaa' : '#888'}
+              value={reminderText}
+              onChangeText={setReminderText}
+            />
+            
+            <View style={styles.datetimeContainer}>
+              <TouchableOpacity 
+                style={[
+                  styles.modalButton, 
+                  {backgroundColor: isDarkMode ? '#444' : '#e5e5e5'}
+                ]} 
+                onPress={() => setShowDatePicker(true)}
+              >
+                <Icon 
+                  name="calendar-outline" 
+                  size={20} 
+                  color={isDarkMode ? "#7b68ee" : "#6a5acd"} 
+                  style={styles.buttonIcon}
+                />
+                <Text style={[
+                  styles.modalButtonText, 
+                  {color: isDarkMode ? '#fff' : '#333'}
+                ]}>
+                  {date?date.toLocaleTimeString():"Pick Date"}
+                </Text>
+              </TouchableOpacity>
+              
+              {showDatePicker && (
+                <DateTimePicker 
+                  value={tempDate} 
+                  mode="date" 
+                  onChange={handleDateChange} 
+                  themeVariant={isDarkMode ? 'dark' : 'light'}
+                />
+              )}
+              
+              {showTimePicker && (
+                <DateTimePicker 
+                  value={tempDate} 
+                  mode="time" 
+                  onChange={handleTimeChange} 
+                  themeVariant={isDarkMode ? 'dark' : 'light'}
+                />
+              )}
+            </View>
+            
+            <View style={styles.modalActions}>
+              <TouchableOpacity 
+                style={[
+                  styles.modalActionButton, 
+                  {backgroundColor: isDarkMode ? '#333' : '#f5f5f5'}
+                ]} 
+                onPress={() => setModalVisible(false)}
+              >
+                <Text style={[
+                  styles.modalActionButtonText, 
+                  {color: isDarkMode ? '#fff' : '#333'}
+                ]}>
+                  Cancel
+                </Text>
+              </TouchableOpacity>
+              
+              <TouchableOpacity 
+                style={[
+                  styles.modalActionButton, 
+                  {backgroundColor: isDarkMode ? '#7b68ee' : '#6a5acd'}
+                ]} 
+                onPress={scheduleNotification}
+              >
+                <Text style={styles.modalActionButtonText}>
+                  Set Reminder
+                </Text>
+              </TouchableOpacity>
+            </View>
           </View>
-        )}
-      </View>
+        </View>
+      </Modal>
     </LinearGradient>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    justifyContent: "center",
+  container: { 
+    flex: 1, 
     padding: 20,
+    backgroundColor: "#000",
   },
-  card: {
-    backgroundColor: "rgba(255, 255, 255, 0.9)",
+  headerContainer: {
+    marginBottom: 20,
+    paddingHorizontal: 10
+  },
+  header: { 
+    fontSize: 28, 
+    fontWeight: "bold", 
+    textAlign: "left", 
+    marginBottom: 5,
+    color: "#fff"
+  },
+  subHeader: {
+    fontSize: 16,
+    textAlign: "left",
+    color: "#ccc"
+  },
+  emptyState: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20
+  },
+  noRemindersText: { 
+    fontSize: 18,
+    textAlign: "center", 
+    marginTop: 15,
+    marginBottom: 5,
+    color: "#aaa"
+  },
+  noRemindersSubText: {
+    fontSize: 14,
+    textAlign: "center",
+    color: "#777"
+  },
+  listContainer: {
+    paddingBottom: 20
+  },
+  reminderItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent:"space-between",
+    padding: 15,
+    borderRadius: 10,
+    marginBottom: 10,
+    backgroundColor: "#111", 
+    shadowColor: "#fff",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 3,
+    elevation: 2,
+  },
+  reminderIcon: {
+    displayL:"flex",
+    alignItems:"center",
+    justifyContent:"center",
+    marginRight: 15
+  },
+  remindContent: {
+    flex: 1
+  },
+  reminderText: { 
+    fontSize: 16,
+    marginBottom: 3,
+    color: "#fff"
+  },
+  reminderTime: {
+    fontSize: 14,
+    color: "#bbb"
+  },
+  deleteButton: {
+    padding: 8,
+    marginLeft: 10
+  },
+  fab: { 
+    position: "absolute", 
+    bottom: 30, 
+    right: 30, 
+    width: 60,
+    height: 60,
+    borderRadius: 30,
+    backgroundColor: "#fff",
+    justifyContent: 'center',
+    alignItems: 'center',
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.3,
+    shadowRadius: 5,
+    elevation: 5,
+  },
+  modalContainer: { 
+    flex: 1, 
+    justifyContent: "center", 
+    alignItems: "center", 
+    backgroundColor: "rgba(0,0,0,0.8)" 
+  },
+  modalContent: { 
+    width: "90%", 
+    maxWidth: 400,
     borderRadius: 15,
     padding: 20,
-    shadowColor: "#000",
+    backgroundColor: "#222",
+    shadowColor: "#fff",
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.25,
     shadowRadius: 4,
     elevation: 5,
   },
-  title: {
-    fontSize: 24,
-    fontWeight: "bold",
-    color: "#333",
+  modalTitle: { 
+    fontSize: 22, 
+    fontWeight: 'bold',
+    marginBottom: 20, 
     textAlign: "center",
-    marginBottom: 20,
+    color: "#fff"
   },
-  dateContainer: {
-    flexDirection: "row",
-    alignItems: "center",
-    marginBottom: 20,
-    backgroundColor: "rgba(255, 255, 255, 0.8)",
-    padding: 10,
-    borderRadius: 8,
-  },
-  dateText: {
-    fontSize: 16,
-    color: "#333",
-    marginLeft: 10,
-    flex: 1,
-  },
-  darkText: {
-    color: "#fff",
-  },
-  button: {
-    marginVertical: 10,
-    borderRadius: 12,
-    overflow: "hidden",
-  },
-  buttonGradient: {
-    flexDirection: "row",
-    alignItems: "center",
-    paddingVertical: 12,
-    paddingHorizontal: 20,
-  },
-  buttonText: {
-    color: "#fff",
-    fontSize: 16,
-    fontWeight: "600",
-    marginLeft: 10,
-  },
-  pickerContainer: {
-    marginTop: 20,
-    backgroundColor: "#fff",
+  input: { 
+    padding: 15,
+    marginBottom: 15,
     borderRadius: 10,
-    padding: 10,
+    fontSize: 16,
+    backgroundColor: "#333",
+    color: "#fff"
   },
+  datetimeContainer: {
+    marginBottom: 20
+  },
+  modalButton: { 
+    flexDirection: 'row',
+    padding: 12,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: "#fff",
+    marginBottom: 10
+  },
+  buttonIcon: {
+    marginRight: 10
+  },
+  modalButtonText: { 
+    fontSize: 16,
+    fontWeight: '500',
+    color: "#000"
+  },
+  modalActions: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginTop: 0
+  },
+  modalActionButton: {
+    flex: 1,
+    padding: 15,
+    borderRadius: 10,
+    alignItems: 'center',
+    marginHorizontal: 5,
+    backgroundColor: "#fff"
+  },
+  modalActionButtonText: {
+    color: 'white',
+    fontWeight: 'bold',
+    fontSize: 16
+  }
 });
