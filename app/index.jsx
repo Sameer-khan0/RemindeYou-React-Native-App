@@ -11,12 +11,14 @@ import {
   TextInput,
   Alert,
   StatusBar,
+  Button,
 } from "react-native";
 import DateTimePicker from "@react-native-community/datetimepicker";
 import * as Notifications from "expo-notifications";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { LinearGradient } from "expo-linear-gradient";
 import Icon from "react-native-vector-icons/Ionicons";
+import { useRouter } from "expo-router";
 
 async function setupNotificationChannel() {
   if (Platform.OS === "android") {
@@ -54,6 +56,7 @@ const listScheduledNotifications = async () => {
 };
 
 export default function ReminderApp() {
+  const router = useRouter()
   const [reminders, setReminders] = useState([]);
   const [modalVisible, setModalVisible] = useState(false);
   const [date, setDate] = useState(new Date());
@@ -357,6 +360,7 @@ export default function ReminderApp() {
     >
       <StatusBar backgroundColor={isDarkMode ? "black" : "white"} />
       <View style={styles.headerContainer}>
+      <Button title="Go to Sql page" onPress={() => router.push('/Sql')} />
         <Text style={[styles.header, { color: isDarkMode ? "#fff" : "#000" }]}>
           Your Reminders
         </Text>
