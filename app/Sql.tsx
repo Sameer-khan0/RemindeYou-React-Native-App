@@ -1,5 +1,5 @@
-import { View, Text, Button } from "react-native";
-import React, { useEffect } from "react";
+import { View, Text, Button, FlatList } from "react-native";
+import React, { useEffect, useState } from "react";
 import * as SQLite from "expo-sqlite";
 
 let db: any = null;
@@ -65,29 +65,6 @@ const fetchUsers = async () => {
   }
 };
 
-const fetchNotes = async (user_id: number) => {
-  if (!db) throw new Error("Database not initialized");
-
-  try {
-    const result = await db.getAllAsync(
-      ` SELECT 
-        notes.id as note_id,
-        notes.title as note_title,
-        notes.content,
-        users.id as user_id,
-        users.name as user_name,
-        users.email
-      FROM notes
-      INNER JOIN users ON notes.user_id = ?`,
-      [user_id]
-    );
-    console.log("Fetched notes:", result);
-    return result;
-  } catch (error) {
-    console.log("Error fetching user notes:", error);
-  }
-};
-
 const updateNotes = async (
   id: number,
   title: string,
@@ -147,9 +124,38 @@ const DeleteNote = async (user_id: number, note_id: number) => {
 };
 
 export default function Sql() {
-  useEffect(() => {
-    initDatabase();
-  }, []);
+  const [notes, setnotes] = useState([]);
+
+  const fetchNotes = async (user_id: number) => {
+    if (!db) throw new Error("Database not initialized");
+
+    try {
+      const result = await db.getAllAsync(
+        ` SELECT 
+          notes.id as note_id,
+          notes.title as note_title,
+          notes.content,
+          users.id as user_id,
+          users.name as user_name,
+          users.email
+        FROM notes
+        INNER JOIN users ON notes.user_id = ?`,
+        [user_id]
+      );
+      console.log("Fetched notes:", result);
+      setnotes(result);
+    } catch (error) {
+      console.log("Error fetching user notes:", error);
+    }
+  };
+useEffect(() => {
+  const initializeDatabase = async () => {
+    await initDatabase(); 
+    fetchNotes(1);  // Then, fetch notes for user with ID 1
+  };
+
+  initializeDatabase(); // Call the async function to initialize the database and fetch notes
+}, [])
 
   return (
     <View>
@@ -170,7 +176,19 @@ export default function Sql() {
           updateNotes(1, "entertainmant", "watch a movie for two hours", 1)
         }
       />
-      <Text>Sql</Text>
+      <FlatList
+        data={notes}
+        keyExtractor={(item) => item.note_id.toString()} // Ensure that the key is a string
+        renderItem={({ item }) => {
+          // Destructure to access item
+          return (
+            <>
+              <Text>{item.note_title}</Text>
+              <Text>{item.content}</Text>
+            </>
+          );
+        }}
+      />
     </View>
   );
 }
