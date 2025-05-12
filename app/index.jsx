@@ -1,8 +1,11 @@
 import React, { useState } from "react";
 import { View, Text, Button, TouchableOpacity } from "react-native";
+import { Link } from "expo-router";
 // import DropSheet from "../components/BottomDrawer"; // adjust path if needed
 import LineChartE from "../components/LineChartExample";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
+import BarCode from "../components/Barcode";
+import BarCodeScanner from "../components/BarCodeScanner"
 
 const ExampleScreen = () => {
   const [visible, setVisible] = useState(false);
@@ -13,13 +16,20 @@ const ExampleScreen = () => {
   };
 
   return (
+    <View>
+      <Text>Hello</Text>
+      <Link href="/Scanner">Scanner</Link>
+    </View>
+    // <View style={{ width: 100, height: 100 }}>
+    //   {/* <BarCode /> */}
+    // </View>
     // <View style={{ flex: 1, justifyContent: "center", alignItems: "center" }}>
     //   <Text>Main Content</Text>
-    <GestureHandlerRootView style={{ flex: 1 }}>
-      <View style={{height:200}}>
-      <LineChartE />
-      </View>
-    </GestureHandlerRootView>
+    // <GestureHandlerRootView style={{ flex: 1 }}>
+    //   <View style={{height:200}}>
+    //   {/* <LineChartE /> */}
+    //   </View>
+    // </GestureHandlerRootView>
     /* <TouchableOpacity
       onPress={()=>{console.log("Clicked")}}
         onLongPress={showBottomSheet}
